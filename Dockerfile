@@ -61,6 +61,8 @@ RUN useradd coder \
 
 USER coder
 
+ENV PATH=/home/coder/.local/bin:/home/coder/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
+
 RUN export NPM_CONFIG_PREFIX="$HOME/.local" && \
         mkdir -p "$NPM_CONFIG_PREFIX" && \
         npm config set prefix "$NPM_CONFIG_PREFIX" && \
@@ -69,6 +71,8 @@ RUN export NPM_CONFIG_PREFIX="$HOME/.local" && \
             echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc; \
         fi && \
         export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
+
+RUN npm install -g @devcontainer/cli
 
 RUN mkdir -p "$HOME/.ssh" && \
     chmod 700 "$HOME/.ssh" && \
