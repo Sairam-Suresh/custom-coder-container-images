@@ -72,7 +72,7 @@ RUN export NPM_CONFIG_PREFIX="$HOME/.local" && \
         fi && \
         export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
 
-RUN npm install -g @devcontainer/cli
+RUN npm install -g @devcontainers/cli
 
 RUN mkdir -p "$HOME/.ssh" && \
     chmod 700 "$HOME/.ssh" && \
