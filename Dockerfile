@@ -12,6 +12,7 @@ RUN apt-get update && \
     ca-certificates \
     curl \
     git \
+    direnv \
     jq \
     locales \
     openssh-client \
