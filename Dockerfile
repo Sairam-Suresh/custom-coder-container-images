@@ -17,6 +17,7 @@ RUN apt-get update && \
     openssh-client \
     procps \
     sudo \
+    direnv \
     xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
@@ -120,6 +121,9 @@ EOF
 
 USER coder
 
+ENTRYPOINT ["/usr/local/bin/coder-entrypoint.sh"]
+CMD ["bash", "-l", "/opt/coder/agent.sh"]
+
 # STAGE 2: WORKSPACE-DESKTOP (Desktop environment)
 FROM workspace AS workspace-desktop
 
@@ -154,3 +158,6 @@ RUN cp -rP /home/coder/. /etc/coder-skeleton/ && \
     chown -R coder:coder /etc/coder-skeleton
 
 USER coder
+
+ENTRYPOINT ["/usr/local/bin/coder-entrypoint.sh"]
+CMD ["bash", "-l", "/opt/coder/agent.sh"]
