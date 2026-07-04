@@ -126,12 +126,23 @@ RUN mkdir -p /etc/coder-skeleton && \
     cp -rP /home/coder/. /etc/coder-skeleton/ && \
     chown -R coder:coder /etc/coder-skeleton
 
+RUN mkdir -p /etc/nix-skeleton && \
+    cp -a /nix/. /etc/nix-skeleton/
+
 RUN cat > /usr/local/bin/coder-entrypoint.sh <<'EOF' && \
     chmod +x /usr/local/bin/coder-entrypoint.sh
 #!/bin/bash
 set -e
 
-# 1. Start the Nix Daemon in the background as root (via passwordless sudo)
+# 1. Populate /nix if it was masked by an empty persistent volume mount
+if [ ! -d "/nix/store" ] || [ ! -d "/nix/var" ]; then
+    echo "Initializing empty persistent Nix store from container skeleton..."
+    sudo mkdir -p /nix
+    sudo cp -aT /etc/nix-skeleton /nix 2>/dev/null || true
+    sudo chown -R root:root /nix
+fi
+
+# 2. Start the Nix Daemon in the background as root (via passwordless sudo)
 if command -v nix-daemon >/dev/null 2>&1; then
     echo "Starting Nix Daemon in the background..."
     sudo "$(command -v nix-daemon)" --daemon >/dev/null 2>&1 &
@@ -140,14 +151,14 @@ elif [ -x /nix/var/nix/profiles/default/bin/nix-daemon ]; then
     sudo /nix/var/nix/profiles/default/bin/nix-daemon --daemon >/dev/null 2>&1 &
 fi
 
-# 2. Populate /home/coder if it was masked by an empty persistent volume mount
+# 3. Populate /home/coder if it was masked by an empty persistent volume mount
 if [ ! -f "$HOME/.bashrc" ] || [ ! -d "$HOME/.local" ]; then
     echo "Initializing empty persistent home from container skeleton..."
     cp -rT /etc/coder-skeleton "$HOME" 2>/dev/null || true
     chown -R coder:coder "$HOME"
 fi
 
-# 3. Exec standard shell command / Coder Agent
+# 4. Exec standard shell command / Coder Agent
 exec "$@"
 EOF
 
