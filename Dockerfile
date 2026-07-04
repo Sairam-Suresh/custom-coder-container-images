@@ -6,36 +6,21 @@ USER root
 SHELL ["/bin/bash", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install baseline packages
 RUN apt-get update && \
     apt-get install --yes --no-install-recommends --no-install-suggests \
     bash \
-    build-essential \
+    ca-certificates \
     curl \
-    htop \
+    git \
     jq \
     locales \
-    man \
-    pipx \
-    python3 \
-    python3-pip \
-    podman-compose \
-    sudo \
-    procps \
-    unzip \
-    vim \
-    wget \
     openssh-client \
-    rsync \
-    iproute2 \
-    podman-remote \
-    git
-
-RUN ln -s "$(command -v podman-remote)" /usr/local/bin/podman && \
-    ln -s "$(command -v podman-remote)" /usr/local/bin/docker
+    procps \
+    sudo \
+    xz-utils && \
+    rm -rf /var/lib/apt/lists/*
 
 # Generate the desired locale (en_US.UTF-8)
-# Ensure en_US.UTF-8 is enabled and generated to avoid setlocale warnings
 RUN if [ -f /etc/locale.gen ]; then \
         sed -i -e '/en_US.UTF-8/s/^# *//' /etc/locale.gen || true; \
     fi && \
@@ -47,6 +32,21 @@ ENV LANG=en_US.UTF-8
 ENV LANGUAGE=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
+# Install Nix package manager (multi-user mode)
+# This enables `nix develop` / `nix build` for projects with flake.nix
+RUN curl --proto '=https' --tlsv1.2 -sSf -L \
+      https://install.determinate.systems/nix | \
+      sh -s -- install linux \
+      --init none \
+      --no-confirm \
+      --extra-conf "sandbox = false" \
+      --extra-conf "experimental-features = nix-command flakes" && \
+    echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' \
+      >> /etc/bash.bashrc && \
+    echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' \
+      >> /etc/profile.d/nix.sh
+
+# Install Node.js (needed for devcontainer support)
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
       apt-get install -y nodejs && \
       rm -rf /var/lib/apt/lists/*
@@ -61,8 +61,13 @@ RUN useradd coder \
 
 USER coder
 
-ENV PATH=/home/coder/.local/bin:/home/coder/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
+ENV PATH=/home/coder/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
 
+# Source Nix profile for the coder user so nix, nix-shell, nix develop etc. are available
+RUN echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' >> ~/.bashrc && \
+    echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' >> ~/.profile
+
+# Set up local prefix to allow global npm installations without root permissions
 RUN export NPM_CONFIG_PREFIX="$HOME/.local" && \
         mkdir -p "$NPM_CONFIG_PREFIX" && \
         npm config set prefix "$NPM_CONFIG_PREFIX" && \
@@ -72,6 +77,7 @@ RUN export NPM_CONFIG_PREFIX="$HOME/.local" && \
         fi && \
         export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
 
+# Install devcontainer CLI as required
 RUN npm install -g @devcontainers/cli
 
 RUN mkdir -p "$HOME/.ssh" && \
@@ -79,9 +85,7 @@ RUN mkdir -p "$HOME/.ssh" && \
     (ssh-keyscan -H github.com >> "$HOME/.ssh/known_hosts" || true) && \
     chmod 600 "$HOME/.ssh/known_hosts" || true
 
-RUN pipx ensurepath
-
-# STAGE 2: WORKSPACE-DESKTOP
+# STAGE 2: WORKSPACE-DESKTOP (Desktop environment)
 FROM workspace AS workspace-desktop
 
 USER root
