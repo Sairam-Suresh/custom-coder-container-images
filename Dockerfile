@@ -59,9 +59,14 @@ RUN useradd coder \
     --user-group && \
     echo "coder ALL=(ALL) NOPASSWD:ALL" >>/etc/sudoers.d/nopasswd
 
+RUN echo "build-users-group =" >> /etc/nix/nix.conf && \
+    chown -R coder /nix /etc/nix
+
 USER coder
 
-ENV PATH=/home/coder/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
+# Pre-bake Nix paths directly into the container's default PATH so that non-interactive shells, 
+# IDE daemons, and background agents can find the nix binaries instantly.
+ENV PATH=/home/coder/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/home/coder/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
 
 # Source Nix profile for the coder user so nix, nix-shell, nix develop etc. are available
 RUN echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' >> ~/.bashrc && \
