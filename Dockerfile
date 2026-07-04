@@ -46,6 +46,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf -L \
     echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' \
       >> /etc/profile.d/nix.sh
 
+RUN echo "trusted-users = root coder" >> /etc/nix/nix.conf
+
 # Install Node.js (needed for devcontainer support)
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
       apt-get install -y nodejs && \
@@ -64,8 +66,7 @@ RUN echo "build-users-group =" >> /etc/nix/nix.conf && \
 
 USER coder
 
-# Pre-bake Nix paths directly into the container's default PATH so that non-interactive shells, 
-# IDE daemons, and background agents can find the nix binaries instantly.
+ENV NIX_REMOTE=daemon
 ENV PATH=/home/coder/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/home/coder/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
 
 # Source Nix profile for the coder user so nix, nix-shell, nix develop etc. are available
@@ -89,6 +90,35 @@ RUN mkdir -p "$HOME/.ssh" && \
     chmod 700 "$HOME/.ssh" && \
     (ssh-keyscan -H github.com >> "$HOME/.ssh/known_hosts" || true) && \
     chmod 600 "$HOME/.ssh/known_hosts" || true
+
+USER root
+RUN mkdir -p /etc/coder-skeleton && \
+    cp -rP /home/coder/. /etc/coder-skeleton/ && \
+    chown -R coder:coder /etc/coder-skeleton
+
+RUN cat > /usr/local/bin/coder-entrypoint.sh <<'EOF' && \
+    chmod +x /usr/local/bin/coder-entrypoint.sh
+#!/bin/bash
+set -e
+
+# 1. Start the Nix Daemon in the background as root (via passwordless sudo)
+if [ -x /nix/var/nix/profiles/default/bin/nix-daemon ]; then
+    echo "Starting Nix Daemon in the background..."
+    sudo /nix/var/nix/profiles/default/bin/nix-daemon --daemon >/dev/null 2>&1 &
+fi
+
+# 2. Populate /home/coder if it was masked by an empty persistent volume mount
+if [ ! -f "$HOME/.bashrc" ] || [ ! -d "$HOME/.local" ]; then
+    echo "Initializing empty persistent home from container skeleton..."
+    cp -rT /etc/coder-skeleton "$HOME" 2>/dev/null || true
+    chown -R coder:coder "$HOME"
+fi
+
+# 3. Exec standard shell command / Coder Agent
+exec "$@"
+EOF
+
+USER coder
 
 # STAGE 2: WORKSPACE-DESKTOP (Desktop environment)
 FROM workspace AS workspace-desktop
@@ -118,5 +148,9 @@ RUN echo 'LANG=en_US.UTF-8' >> /etc/default/locale; \
     echo 'export GNOME_SHELL_SESSION_MODE=debian' > /home/$USER/.xsessionrc; \
     echo 'export XDG_CURRENT_DESKTOP=xfce' >> /home/$USER/.xsessionrc; \
     echo 'export XDG_SESSION_TYPE=x11' >> /home/$USER/.xsessionrc;
+
+# Sync the updated home directory to the desktop-stage skeleton
+RUN cp -rP /home/coder/. /etc/coder-skeleton/ && \
+    chown -R coder:coder /etc/coder-skeleton
 
 USER coder
