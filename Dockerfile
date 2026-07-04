@@ -17,7 +17,6 @@ RUN apt-get update && \
     openssh-client \
     procps \
     sudo \
-    direnv \
     xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
@@ -47,12 +46,26 @@ RUN curl --proto '=https' --tlsv1.2 -sSf -L \
     echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' \
       >> /etc/profile.d/nix.sh
 
-RUN echo "trusted-users = root coder" >> /etc/nix/nix.conf
+RUN mkdir -p /etc/nix && \
+    echo "trusted-users = root coder" >> /etc/nix/nix.conf && \
+    chmod 644 /etc/nix/nix.conf
+
+RUN if [ -d /nix/var/nix/profiles/default/bin ]; then \
+            echo "Symlinking Nix binaries to /usr/bin..."; \
+            for bin in /nix/var/nix/profiles/default/bin/*; do \
+                echo "Linking $bin -> /usr/bin/$(basename "$bin")"; \
+                ln -sf "$bin" "/usr/bin/$(basename "$bin")"; \
+            done; \
+        else \
+            echo "ERROR: Nix default profile bin directory not found!" && exit 1; \
+        fi
 
 # Install Node.js (needed for devcontainer support)
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
       apt-get install -y nodejs && \
       rm -rf /var/lib/apt/lists/*
+
+RUN echo "prefix=/home/coder/.local" > /etc/npmrc
 
 # Add coder user
 RUN useradd coder \
@@ -62,8 +75,8 @@ RUN useradd coder \
     --user-group && \
     echo "coder ALL=(ALL) NOPASSWD:ALL" >>/etc/sudoers.d/nopasswd
 
-RUN echo "build-users-group =" >> /etc/nix/nix.conf && \
-    chown -R coder /nix /etc/nix
+RUN mkdir -p /home/coder/.local/bin /home/coder/.local/lib && \
+    chown -R coder:coder /home/coder/.local
 
 USER coder
 
@@ -72,7 +85,18 @@ ENV PATH=/home/coder/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/home/co
 
 # Source Nix profile for the coder user so nix, nix-shell, nix develop etc. are available
 RUN echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' >> ~/.bashrc && \
-    echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' >> ~/.profile
+    echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' >> ~/.profile && \
+    echo 'export NIX_REMOTE=daemon' >> ~/.bashrc
+
+# Ensure system-wide environments also have NIX_REMOTE and NPM configuration presets
+USER root
+RUN echo 'export NIX_REMOTE=daemon' >> /etc/bash.bashrc && \
+    echo 'export NIX_REMOTE=daemon' >> /etc/profile.d/nix.sh && \
+    echo 'export NPM_CONFIG_PREFIX="/home/coder/.local"' >> /etc/bash.bashrc && \
+    echo 'export PATH="/home/coder/.local/bin:$PATH"' >> /etc/bash.bashrc && \
+    echo 'export NPM_CONFIG_PREFIX="/home/coder/.local"' >> /etc/profile.d/npm.sh && \
+    echo 'export PATH="/home/coder/.local/bin:$PATH"' >> /etc/profile.d/npm.sh
+USER coder
 
 # Set up local prefix to allow global npm installations without root permissions
 RUN export NPM_CONFIG_PREFIX="$HOME/.local" && \
@@ -84,8 +108,12 @@ RUN export NPM_CONFIG_PREFIX="$HOME/.local" && \
         fi && \
         export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
 
-# Install devcontainer CLI as required
 RUN npm install -g @devcontainers/cli
+
+USER root
+RUN ln -sf /home/coder/.local/bin/devcontainer /usr/bin/devcontainer
+
+USER coder
 
 RUN mkdir -p "$HOME/.ssh" && \
     chmod 700 "$HOME/.ssh" && \
@@ -103,7 +131,10 @@ RUN cat > /usr/local/bin/coder-entrypoint.sh <<'EOF' && \
 set -e
 
 # 1. Start the Nix Daemon in the background as root (via passwordless sudo)
-if [ -x /nix/var/nix/profiles/default/bin/nix-daemon ]; then
+if command -v nix-daemon >/dev/null 2>&1; then
+    echo "Starting Nix Daemon in the background..."
+    sudo "$(command -v nix-daemon)" --daemon >/dev/null 2>&1 &
+elif [ -x /nix/var/nix/profiles/default/bin/nix-daemon ]; then
     echo "Starting Nix Daemon in the background..."
     sudo /nix/var/nix/profiles/default/bin/nix-daemon --daemon >/dev/null 2>&1 &
 fi
