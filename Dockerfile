@@ -13,6 +13,8 @@ RUN apt-get update && \
     curl \
     git \
     direnv \
+    podman-remote \
+    podman-docker \
     jq \
     locales \
     openssh-client \
@@ -20,6 +22,8 @@ RUN apt-get update && \
     sudo \
     xz-utils && \
     rm -rf /var/lib/apt/lists/*
+
+RUN touch /etc/containers/nodocker
 
 # Generate the desired locale (en_US.UTF-8)
 RUN if [ -f /etc/locale.gen ]; then \
