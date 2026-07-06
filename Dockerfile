@@ -116,7 +116,7 @@ RUN export NPM_CONFIG_PREFIX="$HOME/.local" && \
 RUN npm install -g @devcontainers/cli
 
 RUN mv /home/coder/.local/bin/devcontainer /home/coder/.local/bin/devcontainer-real
-COPY --chown=coder:coder devcontainer-interceptor.js /home/coder/.local/bin/devcontainer
+COPY --chown=coder:coder devcontainer-interceptor.sh /home/coder/.local/bin/devcontainer
 RUN chmod +x /home/coder/.local/bin/devcontainer
 
 USER root
