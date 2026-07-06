@@ -114,14 +114,11 @@ RUN export NPM_CONFIG_PREFIX="$HOME/.local" && \
         export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
 
 RUN npm install -g @devcontainers/cli
-
-RUN mv /home/coder/.local/bin/devcontainer /home/coder/.local/bin/devcontainer-real
-COPY --chown=coder:coder devcontainer-interceptor.sh /home/coder/.local/bin/devcontainer
-RUN chmod +x /home/coder/.local/bin/devcontainer
-
 USER root
-RUN ln -sf /home/coder/.local/bin/devcontainer /usr/bin/devcontainer
-
+COPY podman-wrapper.sh /usr/local/bin/podman-wrapper
+RUN chmod 755 /usr/local/bin/podman-wrapper && \
+    ln -sf /usr/local/bin/podman-wrapper /usr/local/bin/podman && \
+    ln -sf /usr/local/bin/podman-wrapper /usr/local/bin/docker
 USER coder
 
 RUN mkdir -p "$HOME/.ssh" && \
