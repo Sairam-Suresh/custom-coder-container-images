@@ -1,4 +1,6 @@
-# STAGE 1: WORKSPACE (Base Image)
+# ==============================================================================
+# STAGE 1: WORKSPACE (Base CLI-only Workspace with Remote Podman Wrapper)
+# ==============================================================================
 FROM debian:13 AS workspace
 
 USER root
@@ -13,8 +15,6 @@ RUN apt-get update && \
     curl \
     git \
     direnv \
-    podman-remote \
-    podman-docker \
     jq \
     locales \
     openssh-client \
@@ -127,52 +127,98 @@ RUN mkdir -p "$HOME/.ssh" && \
     chmod 600 "$HOME/.ssh/known_hosts" || true
 
 USER root
-RUN mkdir -p /etc/coder-skeleton && \
-    cp -rP /home/coder/. /etc/coder-skeleton/ && \
-    chown -R coder:coder /etc/coder-skeleton
 
-RUN mkdir -p /etc/nix-skeleton && \
-    cp -a /nix/. /etc/nix-skeleton/
+# Standard default shell for the image
+CMD ["/bin/bash"]
 
-RUN cat > /usr/local/bin/coder-entrypoint.sh <<'EOF' && \
-    chmod +x /usr/local/bin/coder-entrypoint.sh
+
+# ==============================================================================
+# STAGE 2: WORKSPACE-PODMAN (CLI Workspace with Local Podman-in-Podman Engine)
+# ==============================================================================
+FROM workspace AS workspace-podman
+
+USER root
+
+# Install the actual Podman runtime, mapping tools, and standard routing configuration helper
+RUN apt-get update && \
+    apt-get install --yes --no-install-recommends --no-install-suggests \
+    podman \
+    fuse-overlayfs \
+    uidmap \
+    slirp4netns \
+    dbus-user-session \
+    iptables && \
+    rm -rf /var/lib/apt/lists/*
+
+# Remove the remote wrapper to let local Podman run natively
+RUN rm -f /usr/local/bin/podman /usr/local/bin/docker && \
+    ln -sf /usr/bin/podman /usr/local/bin/docker
+
+# Configure Sub-UIDs and Sub-GIDs mapping rules for root and coder
+RUN echo "root:1:65535" > /etc/subuid && \
+    echo "root:1:65535" > /etc/subgid && \
+    echo "coder:1:65535" >> /etc/subuid && \
+    echo "coder:1:65535" >> /etc/subgid
+
+# Setup system-level Podman configuration files
+RUN mkdir -p /etc/containers && \
+    echo -e "[registries.search]\nregistries = ['docker.io', 'quay.io', 'gcr.io']" > /etc/containers/registries.conf && \
+    echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /etc/containers/storage.conf && \
+    echo -e "[containers]\nnetns = \"host\"\n\n[engine]\ncgroup_manager = \"cgroupfs\"\nevents_logger = \"none\"\ndatabase_backend = \"sqlite\"" > /etc/containers/containers.conf
+
+# Setup User-level (Rootless) Podman configurations for the 'coder' user
+RUN mkdir -p /home/coder/.config/containers /home/coder/.local/share/containers && \
+    echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/user/1000/containers/storage\"\ngraphroot = \"/home/coder/.local/share/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /home/coder/.config/containers/storage.conf && \
+    echo -e "[containers]\nnetns = \"host\"\n\n[engine]\ncgroup_manager = \"cgroupfs\"\nevents_logger = \"none\"\ndatabase_backend = \"sqlite\"" > /home/coder/.config/containers/containers.conf && \
+    chown -R coder:coder /home/coder/.config /home/coder/.local/share/containers
+
+# Define Podman volumes for storage persistence
+VOLUME /var/lib/containers
+VOLUME /home/coder/.local/share/containers
+
+ENV BUILDAH_ISOLATION=chroot
+
+# Create the automated initialization script to expose the Rootful Podman socket inside the workspace
+RUN cat > /usr/local/bin/init-local-podman.sh <<'EOF' && \
+    chmod +x /usr/local/bin/init-local-podman.sh
 #!/bin/bash
-set -e
+set -euo pipefail
 
-# 1. Populate /nix if it was masked by an empty persistent volume mount
-if [ ! -d "/nix/store" ] || [ ! -d "/nix/var" ]; then
-    echo "Initializing empty persistent Nix store from container skeleton..."
-    sudo mkdir -p /nix
-    sudo cp -aT /etc/nix-skeleton /nix 2>/dev/null || true
-    sudo chown -R root:root /nix
+SOCKET_PATH="/var/run/docker.sock"
+echo "Initializing rootful Podman socket at $SOCKET_PATH..."
+
+# Ensure we start with a clean runtime socket state
+sudo rm -f "$SOCKET_PATH"
+sudo mkdir -p "$(dirname "$SOCKET_PATH")"
+
+# Launch the daemonless system service in the background as root
+sudo podman system service --time 0 unix://"$SOCKET_PATH" >/dev/null 2>&1 &
+SERVICE_PID=$!
+
+# Wait for the system socket to initiate
+for i in {1..25}; do
+    if [ -S "$SOCKET_PATH" ]; then
+        break
+    fi
+    sleep 0.2
+done
+
+if [ -S "$SOCKET_PATH" ]; then
+    sudo chmod 0666 "$SOCKET_PATH"
+    echo "Podman socket active and permissions set to 0666 successfully."
+else
+    echo "Error: Podman socket failed to initialize."
+    exit 1
 fi
-
-# 2. Start the Nix Daemon in the background as root (via passwordless sudo)
-if command -v nix-daemon >/dev/null 2>&1; then
-    echo "Starting Nix Daemon in the background..."
-    sudo "$(command -v nix-daemon)" --daemon >/dev/null 2>&1 &
-elif [ -x /nix/var/nix/profiles/default/bin/nix-daemon ]; then
-    echo "Starting Nix Daemon in the background..."
-    sudo /nix/var/nix/profiles/default/bin/nix-daemon --daemon >/dev/null 2>&1 &
-fi
-
-# 3. Populate /home/coder if it was masked by an empty persistent volume mount
-if [ ! -f "$HOME/.bashrc" ] || [ ! -d "$HOME/.local" ]; then
-    echo "Initializing empty persistent home from container skeleton..."
-    cp -rT /etc/coder-skeleton "$HOME" 2>/dev/null || true
-    chown -R coder:coder "$HOME"
-fi
-
-# 4. Exec standard shell command / Coder Agent
-exec "$@"
 EOF
 
 USER coder
+CMD ["/bin/bash"]
 
-ENTRYPOINT ["/usr/local/bin/coder-entrypoint.sh"]
-CMD ["bash", "-l", "/opt/coder/agent.sh"]
 
-# STAGE 2: WORKSPACE-DESKTOP (Desktop environment)
+# ==============================================================================
+# STAGE 3: WORKSPACE-DESKTOP (Desktop Environment, Remote Podman Wrapper)
+# ==============================================================================
 FROM workspace AS workspace-desktop
 
 USER root
@@ -201,11 +247,39 @@ RUN echo 'LANG=en_US.UTF-8' >> /etc/default/locale; \
     echo 'export XDG_CURRENT_DESKTOP=xfce' >> /home/$USER/.xsessionrc; \
     echo 'export XDG_SESSION_TYPE=x11' >> /home/$USER/.xsessionrc;
 
-# Sync the updated home directory to the desktop-stage skeleton
-RUN cp -rP /home/coder/. /etc/coder-skeleton/ && \
-    chown -R coder:coder /etc/coder-skeleton
+USER coder
+CMD ["/bin/bash"]
+
+# ==============================================================================
+# STAGE 4: WORKSPACE-DESKTOP-PODMAN (Desktop Environment with Local Podman-in-Podman Engine)
+# ==============================================================================
+FROM workspace-podman AS workspace-desktop-podman
+
+USER root
+
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
+    apt-get install -y --no-install-recommends --no-install-suggests dbus-x11 libdatetime-perl openssl ssl-cert xfce4 xfce4-goodies
+
+RUN set -eux; \
+    curl -fsSL -o /root/kasmvncserver_bookworm_1.3.2_amd64.deb https://github.com/kasmtech/KasmVNC/releases/download/v1.3.2/kasmvncserver_bookworm_1.3.2_amd64.deb; \
+    curl -fsSL -o /tmp/google-chrome-stable_current_amd64.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y /root/kasmvncserver_bookworm_1.3.2_amd64.deb /tmp/google-chrome-stable_current_amd64.deb; \
+    rm -f /root/kasmvncserver_bookworm_1.3.2_amd64.deb /tmp/google-chrome-stable_current_amd64.deb; \
+    rm -rf /var/lib/apt/lists/*
+
+# Wrapper to ensure Chrome runs well inside containers (disable /dev/shm usage etc.)
+RUN cat > /usr/local/bin/google-chrome <<'EOF' && \
+    chmod +x /usr/local/bin/google-chrome
+#!/bin/sh
+exec /usr/bin/google-chrome "$@" --disable-dev-shm-usage
+EOF
+
+# Setting the required environment variables
+ARG USER=coder
+RUN echo 'LANG=en_US.UTF-8' >> /etc/default/locale; \
+    echo 'export GNOME_SHELL_SESSION_MODE=debian' > /home/$USER/.xsessionrc; \
+    echo 'export XDG_CURRENT_DESKTOP=xfce' >> /home/$USER/.xsessionrc; \
+    echo 'export XDG_SESSION_TYPE=x11' >> /home/$USER/.xsessionrc;
 
 USER coder
-
-ENTRYPOINT ["/usr/local/bin/coder-entrypoint.sh"]
-CMD ["bash", "-l", "/opt/coder/agent.sh"]
+CMD ["/bin/bash"]
