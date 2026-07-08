@@ -20,10 +20,9 @@ RUN apt-get update && \
     openssh-client \
     procps \
     sudo \
-    xz-utils && \
+    xz-utils \
+    podman-remote && \
     rm -rf /var/lib/apt/lists/*
-
-RUN mkdir -p /etc/containers && touch /etc/containers/nodocker
 
 # Generate the desired locale (en_US.UTF-8)
 RUN if [ -f /etc/locale.gen ]; then \
@@ -87,6 +86,8 @@ USER coder
 
 ENV NIX_REMOTE=daemon
 ENV PATH=/home/coder/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/home/coder/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
+# Define globally to allow clean expansion in containers.conf without explicit dynamic setup
+ENV CERT_DIR=/home/coder/.local/share/ca-certificates
 
 # Source Nix profile for the coder user so nix, nix-shell, nix develop etc. are available
 RUN echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' >> ~/.bashrc && \
@@ -114,11 +115,68 @@ RUN export NPM_CONFIG_PREFIX="$HOME/.local" && \
         export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
 
 RUN npm install -g @devcontainers/cli
+
 USER root
-COPY podman-wrapper.sh /usr/local/bin/podman-wrapper
+
+# Write the podman-wrapper script directly into /usr/local/bin/podman-wrapper
+RUN cat <<'EOF' > /usr/local/bin/podman-wrapper
+#!/bin/bash
+
+# Prevent infinite recursion loops
+if [ "${__PODMAN_WRAPPER_GUARD:-0}" -eq 1 ]; then
+    echo "Error: Infinite loop detected in podman-wrapper!" >&2
+    exit 1
+fi
+export __PODMAN_WRAPPER_GUARD=1
+
+# 1. Locate the real underlying podman execution binary safely
+# Priority: Native engine (/usr/bin/podman) -> Remote client (/usr/bin/podman-remote)
+if [ -x "/usr/bin/podman" ]; then
+    REAL_PODMAN="/usr/bin/podman"
+elif [ -x "/usr/bin/podman-remote" ]; then
+    REAL_PODMAN="/usr/bin/podman-remote"
+else
+    # Fallback search excluding wrapper paths to avoid loop recursion
+    REAL_PODMAN=$(type -p -a podman 2>/dev/null | grep -vE "/usr/local/bin/podman|/usr/local/bin/docker" | head -n 1)
+fi
+
+if [ -z "$REAL_PODMAN" ] || [ ! -x "$REAL_PODMAN" ]; then
+    echo "Error: Could not locate the real 'podman' or 'podman-remote' binary on the system." >&2
+    exit 1
+fi
+
+new_args=()
+i=1
+
+# 2. Parse arguments and drop any variant of the '--userns' option
+while [ $i -le $# ]; do
+    arg="${!i}"
+    case "$arg" in
+        --userns=*)
+            # Drop '--userns=value'
+            i=$((i+1))
+            ;;
+        --userns)
+            # Drop '--userns' and the next space-separated value (e.g. 'keep-id')
+            i=$((i+2))
+            ;;
+        *)
+            # Keep all other arguments untouched
+            new_args+=("$arg")
+            i=$((i+1))
+            ;;
+    esac
+done
+
+# 3. Hand off clean arguments directly to the real podman engine
+exec "$REAL_PODMAN" "${new_args[@]}"
+EOF
+
+# Make the wrapper executable and symlink both podman and docker commands to it
 RUN chmod 755 /usr/local/bin/podman-wrapper && \
     ln -sf /usr/local/bin/podman-wrapper /usr/local/bin/podman && \
     ln -sf /usr/local/bin/podman-wrapper /usr/local/bin/docker
+
 USER coder
 
 RUN mkdir -p "$HOME/.ssh" && \
@@ -144,15 +202,14 @@ RUN apt-get update && \
     apt-get install --yes --no-install-recommends --no-install-suggests \
     podman \
     fuse-overlayfs \
+    catatonit \
     uidmap \
     slirp4netns \
     dbus-user-session \
     iptables && \
     rm -rf /var/lib/apt/lists/*
 
-# Remove the remote wrapper to let local Podman run natively
-RUN rm -f /usr/local/bin/podman /usr/local/bin/docker && \
-    ln -sf /usr/bin/podman /usr/local/bin/docker
+RUN mkdir -p /etc/containers && touch /etc/containers/nodocker
 
 # Configure Sub-UIDs and Sub-GIDs mapping rules for root and coder
 RUN echo "root:1:65535" > /etc/subuid && \
@@ -163,13 +220,55 @@ RUN echo "root:1:65535" > /etc/subuid && \
 # Setup system-level Podman configuration files
 RUN mkdir -p /etc/containers && \
     echo -e "[registries.search]\nregistries = ['docker.io', 'quay.io', 'gcr.io']" > /etc/containers/registries.conf && \
-    echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /etc/containers/storage.conf && \
-    echo -e "[containers]\nnetns = \"host\"\n\n[engine]\ncgroup_manager = \"cgroupfs\"\nevents_logger = \"none\"\ndatabase_backend = \"sqlite\"" > /etc/containers/containers.conf
+    echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /etc/containers/storage.conf
+
+# Write customized default containers.conf for PinP environments
+RUN cat <<'EOF' > /etc/containers/containers.conf
+[engine]
+compose_warning_logs = false
+cgroup_manager = "cgroupfs"
+events_logger = "file"
+runtime = "crun"
+database_backend = "sqlite"
+
+[containers]
+net = "host"
+netns = "host"
+userns = "host"
+ipcns = "host"
+utsns = "host"
+cgroupns = "host"
+cgroups = "disabled"
+log_driver = "k8s-file"
+seccomp_profile = "unconfined"
+add_capabilities = ["SYS_PTRACE", "SYS_ADMIN"]
+volumes = [
+  "${CERT_DIR}/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro",
+  "${CERT_DIR}/ca-bundle.crt:/etc/pki/tls/certs/ca-bundle.crt:ro",
+  "${CERT_DIR}/ca-bundle.crt:/etc/ssl/cert.pem:ro",
+  "/proc:/proc"
+]
+env = [
+  "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt",
+  "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+  "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
+  "CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
+  "HTTP_PROXY=${HTTP_PROXY}",
+  "HTTPS_PROXY=${HTTPS_PROXY}",
+  "ALL_PROXY=${ALL_PROXY}",
+  "NO_PROXY=${NO_PROXY}",
+  "http_proxy=${http_proxy}",
+  "https_proxy=${https_proxy}",
+  "all_proxy=${all_proxy}",
+  "no_proxy=${no_proxy}"
+]
+default_sysctls = []
+EOF
 
 # Setup User-level (Rootless) Podman configurations for the 'coder' user
 RUN mkdir -p /home/coder/.config/containers /home/coder/.local/share/containers && \
     echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/user/1000/containers/storage\"\ngraphroot = \"/home/coder/.local/share/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /home/coder/.config/containers/storage.conf && \
-    echo -e "[containers]\nnetns = \"host\"\n\n[engine]\ncgroup_manager = \"cgroupfs\"\nevents_logger = \"none\"\ndatabase_backend = \"sqlite\"" > /home/coder/.config/containers/containers.conf && \
+    cp /etc/containers/containers.conf /home/coder/.config/containers/containers.conf && \
     chown -R coder:coder /home/coder/.config /home/coder/.local/share/containers
 
 # Define Podman volumes for storage persistence
