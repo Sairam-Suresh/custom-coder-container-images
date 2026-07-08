@@ -86,7 +86,7 @@ USER coder
 
 ENV NIX_REMOTE=daemon
 ENV PATH=/home/coder/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/home/coder/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
-# Define globally to allow clean expansion in containers.conf without explicit dynamic setup
+
 ENV CERT_DIR=/home/coder/.local/share/ca-certificates
 
 # Source Nix profile for the coder user so nix, nix-shell, nix develop etc. are available
@@ -165,7 +165,7 @@ while [ $i -le $# ]; do
             new_args+=("$arg")
             i=$((i+1))
             ;;
-    esac
+        esac
 done
 
 # 3. Hand off clean arguments directly to the real podman engine
@@ -222,7 +222,7 @@ RUN mkdir -p /etc/containers && \
     echo -e "[registries.search]\nregistries = ['docker.io', 'quay.io', 'gcr.io']" > /etc/containers/registries.conf && \
     echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /etc/containers/storage.conf
 
-# Write customized default containers.conf for PinP environments
+# Write customized default containers.conf for PinP environments with hardcoded absolute paths
 RUN cat <<'EOF' > /etc/containers/containers.conf
 [engine]
 compose_warning_logs = false
@@ -243,9 +243,9 @@ log_driver = "k8s-file"
 seccomp_profile = "unconfined"
 add_capabilities = ["SYS_PTRACE", "SYS_ADMIN"]
 volumes = [
-  "${CERT_DIR}/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro",
-  "${CERT_DIR}/ca-bundle.crt:/etc/pki/tls/certs/ca-bundle.crt:ro",
-  "${CERT_DIR}/ca-bundle.crt:/etc/ssl/cert.pem:ro",
+  "/home/coder/.local/share/ca-certificates/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro",
+  "/home/coder/.local/share/ca-certificates/ca-bundle.crt:/etc/pki/tls/certs/ca-bundle.crt:ro",
+  "/home/coder/.local/share/ca-certificates/ca-bundle.crt:/etc/ssl/cert.pem:ro",
   "/proc:/proc"
 ]
 env = [
