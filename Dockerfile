@@ -23,7 +23,7 @@ RUN apt-get update && \
     xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
-RUN touch /etc/containers/nodocker
+RUN mkdir -p /etc/containers && touch /etc/containers/nodocker
 
 # Generate the desired locale (en_US.UTF-8)
 RUN if [ -f /etc/locale.gen ]; then \
