@@ -86,7 +86,7 @@ USER coder
 
 ENV NIX_REMOTE=daemon
 ENV PATH=/home/coder/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/home/coder/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
-
+# Define globally for standard reference
 ENV CERT_DIR=/home/coder/.local/share/ca-certificates
 
 # Source Nix profile for the coder user so nix, nix-shell, nix develop etc. are available
@@ -222,7 +222,7 @@ RUN mkdir -p /etc/containers && \
     echo -e "[registries.search]\nregistries = ['docker.io', 'quay.io', 'gcr.io']" > /etc/containers/registries.conf && \
     echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /etc/containers/storage.conf
 
-# Write customized default containers.conf for PinP environments with hardcoded absolute paths
+# Write customized default containers.conf for PinP environments with hardcoded absolute paths & proxy servers
 RUN cat <<'EOF' > /etc/containers/containers.conf
 [engine]
 compose_warning_logs = false
@@ -253,14 +253,14 @@ env = [
   "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
   "REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
   "CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt",
-  "HTTP_PROXY=${HTTP_PROXY}",
-  "HTTPS_PROXY=${HTTPS_PROXY}",
-  "ALL_PROXY=${ALL_PROXY}",
-  "NO_PROXY=${NO_PROXY}",
-  "http_proxy=${http_proxy}",
-  "https_proxy=${https_proxy}",
-  "all_proxy=${all_proxy}",
-  "no_proxy=${no_proxy}"
+  "HTTP_PROXY=http://192.168.18.9:1055",
+  "HTTPS_PROXY=http://192.168.18.9:1055",
+  "ALL_PROXY=http://192.168.18.9:1055",
+  "NO_PROXY=localhost,127.0.0.1,192.168.18.9",
+  "http_proxy=http://192.168.18.9:1055",
+  "https_proxy=http://192.168.18.9:1055",
+  "all_proxy=http://192.168.18.9:1055",
+  "no_proxy=localhost,127.0.0.1,192.168.18.9"
 ]
 default_sysctls = []
 EOF
