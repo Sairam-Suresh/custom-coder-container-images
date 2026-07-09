@@ -235,23 +235,6 @@ net = "host"
 seccomp_profile = "unconfined"
 add_capabilities = ["SYS_PTRACE", "SYS_ADMIN"]
 log_driver = "k8s-file"
-default_capabilities = [
-  "CHOWN",
-  "DAC_OVERRIDE",
-  "FSETID",
-  "FOWNER",
-  "MKNOD",
-  "NET_RAW",
-  "SETGID",
-  "SETUID",
-  "SETFCAP",
-  "SETPCAP",
-  "NET_BIND_SERVICE",
-  "SYS_CHROOT",
-  "KILL",
-  "AUDIT_WRITE",
-  "SYS_PTRACE"
-]
 privileged = true
 volumes = [
   "/home/coder/.local/share/ca-certificates/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro",
