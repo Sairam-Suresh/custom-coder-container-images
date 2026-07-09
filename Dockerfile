@@ -122,21 +122,17 @@ USER root
 RUN cat <<'EOF' > /usr/local/bin/podman-wrapper
 #!/bin/bash
 
-# Prevent infinite recursion loops
 if [ "${__PODMAN_WRAPPER_GUARD:-0}" -eq 1 ]; then
     echo "Error: Infinite loop detected in podman-wrapper!" >&2
     exit 1
 fi
 export __PODMAN_WRAPPER_GUARD=1
 
-# 1. Locate the real underlying podman execution binary safely
-# Priority: Native engine (/usr/bin/podman) -> Remote client (/usr/bin/podman-remote)
 if [ -x "/usr/bin/podman" ]; then
     REAL_PODMAN="/usr/bin/podman"
 elif [ -x "/usr/bin/podman-remote" ]; then
     REAL_PODMAN="/usr/bin/podman-remote"
 else
-    # Fallback search excluding wrapper paths to avoid loop recursion
     REAL_PODMAN=$(type -p -a podman 2>/dev/null | grep -vE "/usr/local/bin/podman|/usr/local/bin/docker" | head -n 1)
 fi
 
@@ -145,31 +141,8 @@ if [ -z "$REAL_PODMAN" ] || [ ! -x "$REAL_PODMAN" ]; then
     exit 1
 fi
 
-new_args=()
-i=1
-
-# 2. Parse arguments and drop any variant of the '--userns' option
-while [ $i -le $# ]; do
-    arg="${!i}"
-    case "$arg" in
-        --userns=*)
-            # Drop '--userns=value'
-            i=$((i+1))
-            ;;
-        --userns)
-            # Drop '--userns' and the next space-separated value (e.g. 'keep-id')
-            i=$((i+2))
-            ;;
-        *)
-            # Keep all other arguments untouched
-            new_args+=("$arg")
-            i=$((i+1))
-            ;;
-        esac
-done
-
-# 3. Hand off clean arguments directly to the real podman engine
-exec "$REAL_PODMAN" "${new_args[@]}"
+# Forward all incoming arguments seamlessly
+exec "$REAL_PODMAN" "$@"
 EOF
 
 # Make the wrapper executable and symlink both podman and docker commands to it
@@ -233,11 +206,11 @@ database_backend = "sqlite"
 
 [containers]
 net = "host"
-netns = "host"
-userns = "host"
-ipcns = "host"
-utsns = "host"
-cgroupns = "host"
+# netns = "host"
+# userns = "host"
+# ipcns = "host"
+# utsns = "host"
+# cgroupns = "host"
 cgroups = "disabled"
 log_driver = "k8s-file"
 seccomp_profile = "unconfined"
