@@ -232,13 +232,10 @@ runtime = "crun"
 database_backend = "sqlite"
 
 [containers]
-net = "host"
 netns = "host"
-userns = "host"
-ipcns = "host"
-utsns = "host"
-cgroupns = "host"
-cgroups = "disabled"
+net = "host"
+seccomp_profile = "unconfined"
+add_capabilities = ["SYS_PTRACE", "SYS_ADMIN"]
 log_driver = "k8s-file"
 seccomp_profile = "unconfined"
 add_capabilities = ["SYS_PTRACE", "SYS_ADMIN"]
