@@ -226,8 +226,6 @@ RUN mkdir -p /etc/containers && \
 RUN cat <<'EOF' > /etc/containers/containers.conf
 [engine]
 compose_warning_logs = false
-cgroup_manager = "cgroupfs"
-events_logger = "file"
 runtime = "crun"
 database_backend = "sqlite"
 
@@ -237,8 +235,6 @@ net = "host"
 seccomp_profile = "unconfined"
 add_capabilities = ["SYS_PTRACE", "SYS_ADMIN"]
 log_driver = "k8s-file"
-seccomp_profile = "unconfined"
-add_capabilities = ["SYS_PTRACE", "SYS_ADMIN"]
 default_capabilities = [
   "CHOWN",
   "DAC_OVERRIDE",
