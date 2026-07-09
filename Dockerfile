@@ -257,7 +257,6 @@ volumes = [
   "/home/coder/.local/share/ca-certificates/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro",
   "/home/coder/.local/share/ca-certificates/ca-bundle.crt:/etc/pki/tls/certs/ca-bundle.crt:ro",
   "/home/coder/.local/share/ca-certificates/ca-bundle.crt:/etc/ssl/cert.pem:ro",
-  "/proc:/proc"
 ]
 env = [
   "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt",
@@ -279,7 +278,6 @@ EOF
 # Setup User-level (Rootless) Podman configurations for the 'coder' user
 RUN mkdir -p /home/coder/.config/containers /home/coder/.local/share/containers && \
     echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/user/1000/containers/storage\"\ngraphroot = \"/home/coder/.local/share/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /home/coder/.config/containers/storage.conf && \
-    cp /etc/containers/containers.conf /home/coder/.config/containers/containers.conf && \
     chown -R coder:coder /home/coder/.config /home/coder/.local/share/containers
 
 # Define Podman volumes for storage persistence
