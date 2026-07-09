@@ -8,6 +8,11 @@ USER root
 SHELL ["/bin/bash", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Configure APT pinning to allow target installations from Debian Unstable/Sid.
+# This keeps the base Debian image stable while granting access to Podman 5.8+ and crun 1.27+
+RUN echo "deb http://deb.debian.org/debian/ unstable main" > /etc/apt/sources.list.d/unstable.list && \
+    echo -e "Package: *\nPin: release a=unstable\nPin-Priority: 100\n" > /etc/apt/preferences.d/unstable
+
 RUN apt-get update && \
     apt-get install --yes --no-install-recommends --no-install-suggests \
     bash \
@@ -20,7 +25,8 @@ RUN apt-get update && \
     openssh-client \
     procps \
     sudo \
-    xz-utils \
+    xz-utils && \
+    apt-get install --yes -t unstable --no-install-recommends --no-install-suggests \
     podman-remote && \
     rm -rf /var/lib/apt/lists/*
 
@@ -197,10 +203,14 @@ FROM workspace AS workspace-podman
 
 USER root
 
-# Install the actual Podman runtime, mapping tools, and standard routing configuration helper
+# Install modern versions of Podman runtime dependencies directly from the Unstable branch.
+# This yields modern releases of crun, conmon, and the engine layer.
 RUN apt-get update && \
-    apt-get install --yes --no-install-recommends --no-install-suggests \
+    apt-get install --yes -t unstable --no-install-recommends --no-install-suggests \
     podman \
+    crun \
+    conmon \
+    netavark \
     fuse-overlayfs \
     catatonit \
     uidmap \
@@ -222,7 +232,8 @@ RUN mkdir -p /etc/containers && \
     echo -e "[registries.search]\nregistries = ['docker.io', 'quay.io', 'gcr.io']" > /etc/containers/registries.conf && \
     echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /etc/containers/storage.conf
 
-# Write customized default containers.conf for PinP environments with hardcoded absolute paths & proxy servers
+# Write customized default containers.conf for PinP environments.
+# Fixed default_capabilities overrides to include the crucial SYS_ADMIN and SYS_PTRACE variables.
 RUN cat <<'EOF' > /etc/containers/containers.conf
 [engine]
 compose_warning_logs = false
@@ -236,6 +247,24 @@ seccomp_profile = "unconfined"
 add_capabilities = ["SYS_PTRACE", "SYS_ADMIN"]
 log_driver = "k8s-file"
 privileged = true
+default_capabilities = [
+  "CHOWN",
+  "DAC_OVERRIDE",
+  "FOWNER",
+  "FSETID",
+  "KILL",
+  "MKNOD",
+  "NET_BIND_SERVICE",
+  "NET_RAW",
+  "SETFCAP",
+  "SETGID",
+  "SETPCAP",
+  "SETUID",
+  "SYS_CHROOT",
+  "AUDIT_WRITE",
+  "SYS_PTRACE",
+  "SYS_ADMIN"
+]
 volumes = [
   "/home/coder/.local/share/ca-certificates/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro",
   "/home/coder/.local/share/ca-certificates/ca-bundle.crt:/etc/pki/tls/certs/ca-bundle.crt:ro",
