@@ -26,8 +26,6 @@ RUN apt-get update && \
     procps \
     sudo \
     xz-utils && \
-    apt-get install --yes -t unstable --no-install-recommends --no-install-suggests \
-    podman-remote && \
     rm -rf /var/lib/apt/lists/*
 
 # Generate the desired locale (en_US.UTF-8)
@@ -41,34 +39,6 @@ RUN if [ -f /etc/locale.gen ]; then \
 ENV LANG=en_US.UTF-8
 ENV LANGUAGE=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
-
-# Install Nix package manager (multi-user mode)
-# This enables `nix develop` / `nix build` for projects with flake.nix
-RUN curl --proto '=https' --tlsv1.2 -sSf -L \
-      https://install.determinate.systems/nix | \
-      sh -s -- install linux \
-      --init none \
-      --no-confirm \
-      --extra-conf "sandbox = false" \
-      --extra-conf "experimental-features = nix-command flakes" && \
-    echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' \
-      >> /etc/bash.bashrc && \
-    echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' \
-      >> /etc/profile.d/nix.sh
-
-RUN mkdir -p /etc/nix && \
-    echo "trusted-users = root coder" >> /etc/nix/nix.conf && \
-    chmod 644 /etc/nix/nix.conf
-
-RUN if [ -d /nix/var/nix/profiles/default/bin ]; then \
-            echo "Symlinking Nix binaries to /usr/bin..."; \
-            for bin in /nix/var/nix/profiles/default/bin/*; do \
-                echo "Linking $bin -> /usr/bin/$(basename "$bin")"; \
-                ln -sf "$bin" "/usr/bin/$(basename "$bin")"; \
-            done; \
-        else \
-            echo "ERROR: Nix default profile bin directory not found!" && exit 1; \
-        fi
 
 # Install Node.js (needed for devcontainer support)
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
@@ -90,20 +60,25 @@ RUN mkdir -p /home/coder/.local/bin /home/coder/.local/lib && \
 
 USER coder
 
-ENV NIX_REMOTE=daemon
+# Point Nix clients directly to the mounted socket of our shared Nix Daemon service
+ENV NIX_REMOTE=unix:///nix/var/nix/daemon-socket/socket
 ENV PATH=/home/coder/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/home/coder/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
 # Define globally for standard reference
 ENV CERT_DIR=/home/coder/.local/share/ca-certificates
 
-# Source Nix profile for the coder user so nix, nix-shell, nix develop etc. are available
+# Dynamically source the Nix profile if the shared store gets mounted at runtime
 RUN echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' >> ~/.bashrc && \
+    echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix.sh; fi' >> ~/.bashrc && \
     echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' >> ~/.profile && \
-    echo 'export NIX_REMOTE=daemon' >> ~/.bashrc
+    echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix.sh; fi' >> ~/.profile && \
+    echo 'export NIX_REMOTE=unix:///nix/var/nix/daemon-socket/socket' >> ~/.bashrc
 
 # Ensure system-wide environments also have NIX_REMOTE and NPM configuration presets
 USER root
-RUN echo 'export NIX_REMOTE=daemon' >> /etc/bash.bashrc && \
-    echo 'export NIX_REMOTE=daemon' >> /etc/profile.d/nix.sh && \
+RUN echo 'export NIX_REMOTE=unix:///nix/var/nix/daemon-socket/socket' >> /etc/bash.bashrc && \
+    echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' >> /etc/bash.bashrc && \
+    echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix.sh; fi' >> /etc/bash.bashrc && \
+    echo 'export NIX_REMOTE=unix:///nix/var/nix/daemon-socket/socket' >> /etc/profile.d/nix.sh && \
     echo 'export NPM_CONFIG_PREFIX="/home/coder/.local"' >> /etc/bash.bashrc && \
     echo 'export PATH="/home/coder/.local/bin:$PATH"' >> /etc/bash.bashrc && \
     echo 'export NPM_CONFIG_PREFIX="/home/coder/.local"' >> /etc/profile.d/npm.sh && \
@@ -136,18 +111,16 @@ fi
 export __PODMAN_WRAPPER_GUARD=1
 
 # 1. Locate the real underlying podman execution binary safely
-# Priority: Native engine (/usr/bin/podman) -> Remote client (/usr/bin/podman-remote)
+# Priority: Native engine (/usr/bin/podman)
 if [ -x "/usr/bin/podman" ]; then
     REAL_PODMAN="/usr/bin/podman"
-elif [ -x "/usr/bin/podman-remote" ]; then
-    REAL_PODMAN="/usr/bin/podman-remote"
 else
     # Fallback search excluding wrapper paths to avoid loop recursion
     REAL_PODMAN=$(type -p -a podman 2>/dev/null | grep -vE "/usr/local/bin/podman|/usr/local/bin/docker" | head -n 1)
 fi
 
 if [ -z "$REAL_PODMAN" ] || [ ! -x "$REAL_PODMAN" ]; then
-    echo "Error: Could not locate the real 'podman' or 'podman-remote' binary on the system." >&2
+    echo "Error: Could not locate the real 'podman' binary on the system." >&2
     exit 1
 fi
 
@@ -232,8 +205,7 @@ RUN mkdir -p /etc/containers && \
     echo -e "[registries.search]\nregistries = ['docker.io', 'quay.io', 'gcr.io']" > /etc/containers/registries.conf && \
     echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /etc/containers/storage.conf
 
-# Write customized default containers.conf for PinP environments.
-# Fixed default_capabilities overrides to include the crucial SYS_ADMIN and SYS_PTRACE variables.
+# Write customized default containers.conf for PinP environments with hardcoded absolute paths & proxy servers
 RUN cat <<'EOF' > /etc/containers/containers.conf
 [engine]
 compose_warning_logs = false
@@ -344,7 +316,8 @@ FROM workspace AS workspace-desktop
 USER root
 
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
-    apt-get install -y --no-install-recommends --no-install-suggests dbus-x11 libdatetime-perl openssl ssl-cert xfce4 xfce4-goodies
+    text_packages=(dbus-x11 libdatetime-perl openssl ssl-cert xfce4 xfce4-goodies) && \
+    apt-get install -y --no-install-recommends --no-install-suggests "${text_packages[@]}"
 
 RUN set -eux; \
     curl -fsSL -o /root/kasmvncserver_bookworm_1.3.2_amd64.deb https://github.com/kasmtech/KasmVNC/releases/download/v1.3.2/kasmvncserver_bookworm_1.3.2_amd64.deb; \
@@ -370,6 +343,7 @@ RUN echo 'LANG=en_US.UTF-8' >> /etc/default/locale; \
 USER coder
 CMD ["/bin/bash"]
 
+
 # ==============================================================================
 # STAGE 4: WORKSPACE-DESKTOP-PODMAN (Desktop Environment with Local Podman-in-Podman Engine)
 # ==============================================================================
@@ -378,7 +352,8 @@ FROM workspace-podman AS workspace-desktop-podman
 USER root
 
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
-    apt-get install -y --no-install-recommends --no-install-suggests dbus-x11 libdatetime-perl openssl ssl-cert xfce4 xfce4-goodies
+    text_packages_podman=(dbus-x11 libdatetime-perl openssl ssl-cert xfce4 xfce4-goodies) && \
+    apt-get install -y --no-install-recommends --no-install-suggests "${text_packages_podman[@]}"
 
 RUN set -eux; \
     curl -fsSL -o /root/kasmvncserver_bookworm_1.3.2_amd64.deb https://github.com/kasmtech/KasmVNC/releases/download/v1.3.2/kasmvncserver_bookworm_1.3.2_amd64.deb; \
