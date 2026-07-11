@@ -40,6 +40,9 @@ ENV LANG=en_US.UTF-8
 ENV LANGUAGE=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
+# Silence direnv's noisy exports globally
+ENV DIRENV_LOG_FORMAT=""
+
 # Install Node.js (needed for devcontainer support)
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
       apt-get install -y nodejs && \
@@ -66,14 +69,16 @@ ENV PATH=/home/coder/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/home/co
 # Define globally for standard reference
 ENV CERT_DIR=/home/coder/.local/share/ca-certificates
 
-# Dynamically source the Nix profile if the shared store gets mounted at runtime
+# Dynamically source the Nix profile if the shared store gets mounted at runtime & enable direnv
 RUN echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' >> ~/.bashrc && \
     echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix.sh; fi' >> ~/.bashrc && \
     echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' >> ~/.profile && \
     echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix.sh; fi' >> ~/.profile && \
-    echo 'export NIX_REMOTE=unix:///nix/var/nix/daemon-socket/socket' >> ~/.bashrc
+    echo 'export NIX_REMOTE=unix:///nix/var/nix/daemon-socket/socket' >> ~/.bashrc && \
+    echo 'eval "$(direnv hook bash)"' >> ~/.bashrc && \
+    echo 'export DIRENV_LOG_FORMAT=""' >> ~/.bashrc
 
-# Ensure system-wide environments also have NIX_REMOTE and NPM configuration presets
+# Ensure system-wide environments also have NIX_REMOTE, NPM configuration, and direnv presets
 USER root
 RUN echo 'export NIX_REMOTE=unix:///nix/var/nix/daemon-socket/socket' >> /etc/bash.bashrc && \
     echo 'if [ -e /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh; fi' >> /etc/bash.bashrc && \
@@ -82,7 +87,9 @@ RUN echo 'export NIX_REMOTE=unix:///nix/var/nix/daemon-socket/socket' >> /etc/ba
     echo 'export NPM_CONFIG_PREFIX="/home/coder/.local"' >> /etc/bash.bashrc && \
     echo 'export PATH="/home/coder/.local/bin:$PATH"' >> /etc/bash.bashrc && \
     echo 'export NPM_CONFIG_PREFIX="/home/coder/.local"' >> /etc/profile.d/npm.sh && \
-    echo 'export PATH="/home/coder/.local/bin:$PATH"' >> /etc/profile.d/npm.sh
+    echo 'export PATH="/home/coder/.local/bin:$PATH"' >> /etc/profile.d/npm.sh && \
+    echo 'eval "$(direnv hook bash)"' >> /etc/bash.bashrc && \
+    echo 'export DIRENV_LOG_FORMAT=""' >> /etc/bash.bashrc
 USER coder
 
 # Set up local prefix to allow global npm installations without root permissions
