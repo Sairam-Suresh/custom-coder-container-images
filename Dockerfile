@@ -266,7 +266,7 @@ chmod 700 "/run/user/1000/podman"
 # Launch the system service in the background as the rootless 'coder' user (no sudo)
 # We omit the positional URI here to let Podman generate the socket at $XDG_RUNTIME_DIR/podman/podman.sock natively,
 # completely resolving the "accepts at most 1 arg(s), received 3" CLI parsing conflict.
-podman system service --time 0 >/tmp/podman-service.stdout 2>/tmp/podman-service.stderr &
+podman system service --time=0 >/tmp/podman-service.stdout 2>/tmp/podman-service.stderr &
 SERVICE_PID=$!
 
 # Wait for the user socket to initiate
