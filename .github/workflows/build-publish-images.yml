@@ -47,18 +47,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build and push workspace-desktop image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          target: workspace-desktop
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.lower-owner.outputs.owner }}/workspace-desktop:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
       - name: Build and push workspace-podman image
         uses: docker/build-push-action@v5
         with:
@@ -68,6 +56,18 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ steps.lower-owner.outputs.owner }}/workspace-podman:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push workspace-desktop image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          target: workspace-desktop
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.lower-owner.outputs.owner }}/workspace-desktop:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
