@@ -18,7 +18,6 @@ RUN apt-get update && \
     jq \
     locales \
     openssh-client \
-    vim \
     procps \
     sudo \
     xz-utils && \
@@ -234,8 +233,7 @@ VOLUME /home/coder/.local/share/containers
 ENV BUILDAH_ISOLATION=chroot
 
 # Create the automated initialization script to expose the Rootless Podman socket inside the workspace
-# Crucial Change: Start the system services rootless, write diagnostics to a log file, and output
-# troubleshooting steps if initialization fails.
+# Crucial Change: Start system service with implicit URI socket generation to prevent argument parsing issues.
 RUN cat > /usr/local/bin/init-local-podman.sh <<'EOF' && \
     chmod +x /usr/local/bin/init-local-podman.sh
 #!/bin/bash
@@ -255,17 +253,20 @@ sudo chown -R coder:coder "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
 SOCKET_PATH="/var/run/docker.sock"
-USER_SOCKET="/run/user/1000/podman.sock"
+USER_SOCKET="/run/user/1000/podman/podman.sock"
 
-echo "Initializing rootless Podman socket at $USER_SOCKET..."
+echo "Initializing rootless Podman socket..."
 
 # Ensure we start with a clean runtime socket state
-rm -f "$USER_SOCKET"
 sudo rm -f "$SOCKET_PATH"
+rm -rf "/run/user/1000/podman"
+mkdir -p "/run/user/1000/podman"
+chmod 700 "/run/user/1000/podman"
 
 # Launch the system service in the background as the rootless 'coder' user (no sudo)
-# Store stderr/stdout in /tmp to print errors on boot issues
-podman system service --time 0 unix://"$USER_SOCKET" >/tmp/podman-service.stdout 2>/tmp/podman-service.stderr &
+# We omit the positional URI here to let Podman generate the socket at $XDG_RUNTIME_DIR/podman/podman.sock natively,
+# completely resolving the "accepts at most 1 arg(s), received 3" CLI parsing conflict.
+podman system service --time 0 >/tmp/podman-service.stdout 2>/tmp/podman-service.stderr &
 SERVICE_PID=$!
 
 # Wait for the user socket to initiate
