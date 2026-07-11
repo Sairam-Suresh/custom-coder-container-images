@@ -173,6 +173,7 @@ service_timeout = 0
 [containers]
 netns = "host"
 net = "host"
+userns = "keep-id"
 seccomp_profile = "unconfined"
 add_capabilities = ["SYS_PTRACE", "SYS_ADMIN"]
 log_driver = "k8s-file"
