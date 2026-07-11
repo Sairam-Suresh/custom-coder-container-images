@@ -198,11 +198,12 @@ RUN apt-get update && \
 
 RUN mkdir -p /etc/containers && touch /etc/containers/nodocker
 
-# Configure Sub-UIDs and Sub-GIDs mapping rules for root and coder
-RUN echo "root:1:65535" > /etc/subuid && \
-    echo "root:1:65535" > /etc/subgid && \
-    echo "coder:1:65535" >> /etc/subuid && \
-    echo "coder:1:65535" >> /etc/subgid
+# Configure Sub-UIDs and Sub-GIDs mapping rules for root and coder.
+# Note: Root and coder ranges are separated cleanly to prevent overlap exhaustion errors.
+RUN echo "root:100000:65536" > /etc/subuid && \
+    echo "root:100000:65536" > /etc/subgid && \
+    echo "coder:200000:65536" >> /etc/subuid && \
+    echo "coder:200000:65536" >> /etc/subgid
 
 # Setup system-level Podman configuration files
 RUN mkdir -p /etc/containers && \
@@ -272,14 +273,18 @@ RUN mkdir -p /home/coder/.config/containers /home/coder/.local/share/containers 
     echo -e "[engine]\ncgroup_manager = \"cgroupfs\"\n\n[containers]\nseccomp_profile = \"unconfined\"" > /home/coder/.config/containers/containers.conf && \
     chown -R coder:coder /home/coder/.config /home/coder/.local/share/containers
 
+# Setup runtime working directories and global environment settings for Rootless execution
+RUN mkdir -p /run/user/1000 && chown -R coder:coder /run/user/1000 && chmod 700 /run/user/1000
+ENV XDG_RUNTIME_DIR=/run/user/1000
+
 # Define Podman volumes for storage persistence
 VOLUME /var/lib/containers
 VOLUME /home/coder/.local/share/containers
 
 ENV BUILDAH_ISOLATION=chroot
 
-# Create the automated initialization script to expose the Rootful Podman socket inside the workspace
-# Crucial Change: Force-generate a D-Bus Machine ID and start dbus system service to permit nested session negotiation.
+# Create the automated initialization script to expose the Rootless Podman socket inside the workspace
+# Crucial Change: Run the podman system service context rootless under the local coder user.
 RUN cat > /usr/local/bin/init-local-podman.sh <<'EOF' && \
     chmod +x /usr/local/bin/init-local-podman.sh
 #!/bin/bash
@@ -292,30 +297,40 @@ if [ -f /etc/init.d/dbus ]; then
     sudo /etc/init.d/dbus start || true
 fi
 
+# Set up user runtime directory
+export XDG_RUNTIME_DIR="/run/user/1000"
+sudo mkdir -p "$XDG_RUNTIME_DIR"
+sudo chown -R coder:coder "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+
 SOCKET_PATH="/var/run/docker.sock"
-echo "Initializing rootful Podman socket at $SOCKET_PATH..."
+USER_SOCKET="/run/user/1000/podman.sock"
+
+echo "Initializing rootless Podman socket at $USER_SOCKET..."
 
 # Ensure we start with a clean runtime socket state
+rm -f "$USER_SOCKET"
 sudo rm -f "$SOCKET_PATH"
-sudo mkdir -p "$(dirname "$SOCKET_PATH")"
 
-# Launch the daemonless system service in the background as root
-sudo podman system service --time 0 unix://"$SOCKET_PATH" >/dev/null 2>&1 &
+# Launch the system service in the background as the rootless 'coder' user (no sudo)
+podman system service --time 0 unix://"$USER_SOCKET" >/dev/null 2>&1 &
 SERVICE_PID=$!
 
-# Wait for the system socket to initiate
+# Wait for the user socket to initiate
 for i in {1..25}; do
-    if [ -S "$SOCKET_PATH" ]; then
+    if [ -S "$USER_SOCKET" ]; then
         break
     fi
     sleep 0.2
 done
 
-if [ -S "$SOCKET_PATH" ]; then
-    sudo chmod 0666 "$SOCKET_PATH"
-    echo "Podman socket active and permissions set to 0666 successfully."
+if [ -S "$USER_SOCKET" ]; then
+    # Expose the user-owned socket to /var/run/docker.sock via symlink for developer tool compatibility
+    sudo ln -sf "$USER_SOCKET" "$SOCKET_PATH"
+    sudo chmod 0666 "$SOCKET_PATH" || true
+    echo "Rootless Podman socket active and linked to $SOCKET_PATH successfully."
 else
-    echo "Error: Podman socket failed to initialize."
+    echo "Error: Rootless Podman socket failed to initialize."
     exit 1
 fi
 EOF
