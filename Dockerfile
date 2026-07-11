@@ -153,24 +153,30 @@ RUN echo "root:10000:50000" > /etc/subuid && \
     echo "coder:10000:50000" >> /etc/subuid && \
     echo "coder:10000:50000" >> /etc/subgid
 
+# Create internal mount target for Host Image Cache sharing
+RUN mkdir -p /var/lib/shared-host-cache && chown -R coder:coder /var/lib/shared-host-cache
+
 # Setup system-level Podman configuration files
+# Note: Added "/var/lib/shared-host-cache" to additionalimagestores dynamically to support image reuse.
+# Added ignore_chown_errors = true and mountopt = "nodev,fsync=0" globally to ensure both systems read it.
 RUN mkdir -p /etc/containers && \
     echo -e "[registries.search]\nregistries = ['docker.io', 'quay.io', 'gcr.io']" > /etc/containers/registries.conf && \
-    echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"" > /etc/containers/storage.conf
+    echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"\n\n[storage.options]\nadditionalimagestores = [\"/var/lib/shared-host-cache\"]\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /etc/containers/storage.conf
 
 # Write customized default containers.conf for PinP environments with hardcoded absolute paths & proxy servers
-# Crucial Change: Force 'cgroup_manager = "none"', 'events_backend = "file"', and 'service_timeout = 0' in the [engine] block.
-# This prevents Podman from crashing inside containers when systemd/dbus features are unavailable and keeps the service alive indefinitely.
+# Crucial Change: Force 'cgroup_manager = "cgroupfs"', 'events_backend = "file"', 'service_timeout = 0', and 'cgroups = "disabled"'.
+# This registers standard configuration drivers but disables cgroups nested handling to run inside unprivileged sandboxes.
 RUN cat <<'EOF' > /etc/containers/containers.conf
 [engine]
 compose_warning_logs = false
 runtime = "crun"
 database_backend = "sqlite"
-cgroup_manager = "none"
+cgroup_manager = "cgroupfs"
 events_backend = "file"
 service_timeout = 0
 
 [containers]
+cgroups = "disabled"
 netns = "host"
 net = "host"
 userns = "keep-id"
@@ -218,11 +224,9 @@ env = [
 default_sysctls = []
 EOF
 
-# Setup User-level (Rootless) Podman configurations for the 'coder' user
-# Crucial Change: Force cgroup_manager = "none", events_backend = "file", service_timeout = 0, and ignore_chown_errors = true.
-RUN mkdir -p /home/coder/.config/containers /home/coder/.local/share/containers && \
-    echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/user/1000/containers/storage\"\ngraphroot = \"/home/coder/.local/share/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /home/coder/.config/containers/storage.conf && \
-    chown -R coder:coder /home/coder/.config /home/coder/.local/share/containers
+# Setup unprivileged storage parent path ownership natively
+RUN mkdir -p /home/coder/.local/share/containers && \
+    chown -R coder:coder /home/coder/.local/share/containers
 
 # Setup runtime working directories and global environment settings for Rootless execution
 RUN mkdir -p /run/user/1000 && chown -R coder:coder /run/user/1000 && chmod 700 /run/user/1000
