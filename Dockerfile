@@ -15,6 +15,7 @@ RUN apt-get update && \
     curl \
     git \
     direnv \
+    vim \
     jq \
     locales \
     openssh-client \
@@ -206,6 +207,7 @@ volumes = [
   "/home/coder/.local/share/ca-certificates/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro",
   "/home/coder/.local/share/ca-certificates/ca-bundle.crt:/etc/pki/tls/certs/ca-bundle.crt:ro",
   "/home/coder/.local/share/ca-certificates/ca-bundle.crt:/etc/ssl/cert.pem:ro",
+  "/proc:/proc:ro"
 ]
 env = [
   "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt",
