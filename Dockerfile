@@ -146,17 +146,17 @@ RUN apt-get update && \
 RUN mkdir -p /etc/containers && touch /etc/containers/nodocker
 
 # Configure Sub-UIDs and Sub-GIDs mapping rules for root and coder.
-# Note: The ranges are scaled dynamically to fit under the host user's total 262,144 limit.
-# root uses [10000 - 75535], coder uses [100000 - 165535]. This resolves permission blockages!
-RUN echo "root:10000:65536" > /etc/subuid && \
-    echo "root:10000:65536" > /etc/subgid && \
-    echo "coder:100000:65536" >> /etc/subuid && \
-    echo "coder:100000:65536" >> /etc/subgid
+# Note: Since the outer container has at most 65,536 UIDs mapped by keep-id, our subordinate UID ranges
+# must fit comfortably inside the [0 - 65535] limits to prevent operation-not-permitted errors during namespace writing.
+RUN echo "root:10000:50000" > /etc/subuid && \
+    echo "root:10000:50000" > /etc/subgid && \
+    echo "coder:10000:50000" >> /etc/subuid && \
+    echo "coder:10000:50000" >> /etc/subgid
 
 # Setup system-level Podman configuration files
 RUN mkdir -p /etc/containers && \
     echo -e "[registries.search]\nregistries = ['docker.io', 'quay.io', 'gcr.io']" > /etc/containers/registries.conf && \
-    echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /etc/containers/storage.conf
+    echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"" > /etc/containers/storage.conf
 
 # Write customized default containers.conf for PinP environments with hardcoded absolute paths & proxy servers
 # Crucial Change: Force 'cgroup_manager = "none"', 'events_backend = "file"', and 'service_timeout = 0' in the [engine] block.
@@ -235,7 +235,7 @@ VOLUME /home/coder/.local/share/containers
 ENV BUILDAH_ISOLATION=chroot
 
 # Create the automated initialization script to expose the Rootless Podman socket inside the workspace
-# Crucial Change: We unset CONTAINER_HOST and CONTAINER_CONNECTION to force the service to run in local engine mode.
+# Crucial Change: Completely omits command-line arguments (relying on containers.conf instead) to bypass argument splitting bugs.
 RUN cat > /usr/local/bin/init-local-podman.sh <<'EOF' && \
     chmod +x /usr/local/bin/init-local-podman.sh
 #!/bin/bash
