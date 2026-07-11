@@ -18,6 +18,7 @@ RUN apt-get update && \
     jq \
     locales \
     openssh-client \
+    vim \
     procps \
     sudo \
     xz-utils && \
@@ -101,62 +102,9 @@ RUN npm install -g @devcontainers/cli
 
 USER root
 
-# Write the podman-wrapper script directly into /usr/local/bin/podman-wrapper
-RUN cat <<'EOF' > /usr/local/bin/podman-wrapper
-#!/bin/bash
-
-# Prevent infinite recursion loops
-if [ "${__PODMAN_WRAPPER_GUARD:-0}" -eq 1 ]; then
-    echo "Error: Infinite loop detected in podman-wrapper!" >&2
-    exit 1
-fi
-export __PODMAN_WRAPPER_GUARD=1
-
-# 1. Locate the real underlying podman execution binary safely
-# Priority: Native engine (/usr/bin/podman)
-if [ -x "/usr/bin/podman" ]; then
-    REAL_PODMAN="/usr/bin/podman"
-else
-    # Fallback search excluding wrapper paths to avoid loop recursion
-    REAL_PODMAN=$(type -p -a podman 2>/dev/null | grep -vE "/usr/local/bin/podman|/usr/local/bin/docker" | head -n 1)
-fi
-
-if [ -z "$REAL_PODMAN" ] || [ ! -x "$REAL_PODMAN" ]; then
-    echo "Error: Could not locate the real 'podman' binary on the system." >&2
-    exit 1
-fi
-
-new_args=()
-i=1
-
-# 2. Parse arguments and drop any variant of the '--userns' option
-while [ $i -le $# ]; do
-    arg="${!i}"
-    case "$arg" in
-        --userns=*)
-            # Drop '--userns=value'
-            i=$((i+1))
-            ;;
-        --userns)
-            # Drop '--userns' and the next space-separated value (e.g. 'keep-id')
-            i=$((i+2))
-            ;;
-        *)
-            # Keep all other arguments untouched
-            new_args+=("$arg")
-            i=$((i+1))
-            ;;
-        esac
-done
-
-# 3. Hand off clean arguments directly to the real podman engine
-exec "$REAL_PODMAN" "${new_args[@]}"
-EOF
-
-# Make the wrapper executable and symlink both podman and docker commands to it
-RUN chmod 755 /usr/local/bin/podman-wrapper && \
-    ln -sf /usr/local/bin/podman-wrapper /usr/local/bin/podman && \
-    ln -sf /usr/local/bin/podman-wrapper /usr/local/bin/docker
+# Create a clean symlink to point 'docker' directly to the system 'podman' executable path.
+# This ensures standard container tooling compatibility without needing a script wrapper.
+RUN ln -sf /usr/bin/podman /usr/local/bin/docker
 
 USER coder
 
@@ -211,13 +159,15 @@ RUN mkdir -p /etc/containers && \
     echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /etc/containers/storage.conf
 
 # Write customized default containers.conf for PinP environments with hardcoded absolute paths & proxy servers
-# Crucial Change: Force 'cgroup_manager = "cgroupfs"' in the [engine] block. This bypasses the need for systemd.
+# Crucial Change: Force 'cgroup_manager = "none"' and 'events_backend = "file"' in the [engine] block.
+# This prevents Podman from crashing inside containers when systemd/dbus features are unavailable.
 RUN cat <<'EOF' > /etc/containers/containers.conf
 [engine]
 compose_warning_logs = false
 runtime = "crun"
 database_backend = "sqlite"
-cgroup_manager = "cgroupfs"
+cgroup_manager = "none"
+events_backend = "file"
 
 [containers]
 netns = "host"
@@ -267,10 +217,10 @@ default_sysctls = []
 EOF
 
 # Setup User-level (Rootless) Podman configurations for the 'coder' user
-# Crucial Change: Write default containers.conf for rootless usage forcing cgroupfs as well.
+# Crucial Change: Force cgroup_manager = "none", events_backend = "file", and ignore_chown_errors = true.
 RUN mkdir -p /home/coder/.config/containers /home/coder/.local/share/containers && \
-    echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/user/1000/containers/storage\"\ngraphroot = \"/home/coder/.local/share/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /home/coder/.config/containers/storage.conf && \
-    echo -e "[engine]\ncgroup_manager = \"cgroupfs\"\n\n[containers]\nseccomp_profile = \"unconfined\"" > /home/coder/.config/containers/containers.conf && \
+    echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/user/1000/containers/storage\"\ngraphroot = \"/home/coder/.local/share/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"\nignore_chown_errors = true" > /home/coder/.config/containers/storage.conf && \
+    echo -e "[engine]\ncgroup_manager = \"none\"\nevents_backend = \"file\"\n\n[containers]\nseccomp_profile = \"unconfined\"" > /home/coder/.config/containers/containers.conf && \
     chown -R coder:coder /home/coder/.config /home/coder/.local/share/containers
 
 # Setup runtime working directories and global environment settings for Rootless execution
@@ -284,7 +234,8 @@ VOLUME /home/coder/.local/share/containers
 ENV BUILDAH_ISOLATION=chroot
 
 # Create the automated initialization script to expose the Rootless Podman socket inside the workspace
-# Crucial Change: Run the podman system service context rootless under the local coder user.
+# Crucial Change: Start the system services rootless, write diagnostics to a log file, and output
+# troubleshooting steps if initialization fails.
 RUN cat > /usr/local/bin/init-local-podman.sh <<'EOF' && \
     chmod +x /usr/local/bin/init-local-podman.sh
 #!/bin/bash
@@ -313,24 +264,40 @@ rm -f "$USER_SOCKET"
 sudo rm -f "$SOCKET_PATH"
 
 # Launch the system service in the background as the rootless 'coder' user (no sudo)
-podman system service --time 0 unix://"$USER_SOCKET" >/dev/null 2>&1 &
+# Store stderr/stdout in /tmp to print errors on boot issues
+podman system service --time 0 unix://"$USER_SOCKET" >/tmp/podman-service.stdout 2>/tmp/podman-service.stderr &
 SERVICE_PID=$!
 
 # Wait for the user socket to initiate
+SOCKET_FOUND=0
 for i in {1..25}; do
     if [ -S "$USER_SOCKET" ]; then
+        SOCKET_FOUND=1
         break
     fi
     sleep 0.2
 done
 
-if [ -S "$USER_SOCKET" ]; then
+if [ "$SOCKET_FOUND" -eq 1 ]; then
     # Expose the user-owned socket to /var/run/docker.sock via symlink for developer tool compatibility
     sudo ln -sf "$USER_SOCKET" "$SOCKET_PATH"
     sudo chmod 0666 "$SOCKET_PATH" || true
     echo "Rootless Podman socket active and linked to $SOCKET_PATH successfully."
 else
-    echo "Error: Rootless Podman socket failed to initialize."
+    echo "Error: Rootless Podman socket failed to initialize." >&2
+    echo "=========================================================" >&2
+    echo "                  PODMAN TROUBLESHOOTING                 " >&2
+    echo "=========================================================" >&2
+    echo "1. Verify the outer container has permission to use namespaces." >&2
+    echo "   (Ensure it is run with --privileged or --cap-add=SYS_ADMIN)" >&2
+    echo "2. Check if /dev/fuse is accessible for fuse-overlayfs." >&2
+    echo "   (Try running the outer container with --device /dev/fuse)" >&2
+    echo "=========================================================" >&2
+    echo "--- Podman Service Error Log ---" >&2
+    if [ -f /tmp/podman-service.stderr ]; then
+        cat /tmp/podman-service.stderr >&2
+    fi
+    echo "=========================================================" >&2
     exit 1
 fi
 EOF
