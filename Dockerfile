@@ -221,8 +221,7 @@ EOF
 # Setup User-level (Rootless) Podman configurations for the 'coder' user
 # Crucial Change: Force cgroup_manager = "none", events_backend = "file", service_timeout = 0, and ignore_chown_errors = true.
 RUN mkdir -p /home/coder/.config/containers /home/coder/.local/share/containers && \
-    echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/user/1000/containers/storage\"\ngraphroot = \"/home/coder/.local/share/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"\nignore_chown_errors = true" > /home/coder/.config/containers/storage.conf && \
-    echo -e "[engine]\ncgroup_manager = \"none\"\nevents_backend = \"file\"\nservice_timeout = 0\n\n[containers]\nseccomp_profile = \"unconfined\"" > /home/coder/.config/containers/containers.conf && \
+    echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/user/1000/containers/storage\"\ngraphroot = \"/home/coder/.local/share/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /home/coder/.config/containers/storage.conf && \
     chown -R coder:coder /home/coder/.config /home/coder/.local/share/containers
 
 # Setup runtime working directories and global environment settings for Rootless execution
