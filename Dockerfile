@@ -8,11 +8,6 @@ USER root
 SHELL ["/bin/bash", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Configure APT pinning to allow target installations from Debian Unstable/Sid.
-# This keeps the base Debian image stable while granting access to Podman 5.8+ and crun 1.27+
-RUN echo "deb http://deb.debian.org/debian/ unstable main" > /etc/apt/sources.list.d/unstable.list && \
-    echo -e "Package: *\nPin: release a=unstable\nPin-Priority: 100\n" > /etc/apt/preferences.d/unstable
-
 RUN apt-get update && \
     apt-get install --yes --no-install-recommends --no-install-suggests \
     bash \
@@ -183,10 +178,10 @@ FROM workspace AS workspace-podman
 
 USER root
 
-# Install modern versions of Podman runtime dependencies directly from the Unstable branch.
-# This yields modern releases of crun, conmon, and the engine layer.
+# Install standard stable versions of Podman runtime dependencies.
+# Note: Adding dbus-x11 and libcap2-bin to ensure robust capabilities and D-Bus integration in CLI.
 RUN apt-get update && \
-    apt-get install --yes -t unstable --no-install-recommends --no-install-suggests \
+    apt-get install --yes --no-install-recommends --no-install-suggests \
     podman \
     crun \
     conmon \
@@ -196,6 +191,8 @@ RUN apt-get update && \
     uidmap \
     slirp4netns \
     dbus-user-session \
+    dbus-x11 \
+    libcap2-bin \
     iptables && \
     rm -rf /var/lib/apt/lists/*
 
@@ -213,11 +210,13 @@ RUN mkdir -p /etc/containers && \
     echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /etc/containers/storage.conf
 
 # Write customized default containers.conf for PinP environments with hardcoded absolute paths & proxy servers
+# Crucial Change: Force 'cgroup_manager = "cgroupfs"' in the [engine] block. This bypasses the need for systemd.
 RUN cat <<'EOF' > /etc/containers/containers.conf
 [engine]
 compose_warning_logs = false
 runtime = "crun"
 database_backend = "sqlite"
+cgroup_manager = "cgroupfs"
 
 [containers]
 netns = "host"
@@ -267,8 +266,10 @@ default_sysctls = []
 EOF
 
 # Setup User-level (Rootless) Podman configurations for the 'coder' user
+# Crucial Change: Write default containers.conf for rootless usage forcing cgroupfs as well.
 RUN mkdir -p /home/coder/.config/containers /home/coder/.local/share/containers && \
     echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/user/1000/containers/storage\"\ngraphroot = \"/home/coder/.local/share/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /home/coder/.config/containers/storage.conf && \
+    echo -e "[engine]\ncgroup_manager = \"cgroupfs\"\n\n[containers]\nseccomp_profile = \"unconfined\"" > /home/coder/.config/containers/containers.conf && \
     chown -R coder:coder /home/coder/.config /home/coder/.local/share/containers
 
 # Define Podman volumes for storage persistence
@@ -278,10 +279,18 @@ VOLUME /home/coder/.local/share/containers
 ENV BUILDAH_ISOLATION=chroot
 
 # Create the automated initialization script to expose the Rootful Podman socket inside the workspace
+# Crucial Change: Force-generate a D-Bus Machine ID and start dbus system service to permit nested session negotiation.
 RUN cat > /usr/local/bin/init-local-podman.sh <<'EOF' && \
     chmod +x /usr/local/bin/init-local-podman.sh
 #!/bin/bash
 set -euo pipefail
+
+# Ensure D-Bus has a valid system machine-id and starting the service
+echo "Configuring D-Bus environment..."
+sudo dbus-uuidgen --ensure
+if [ -f /etc/init.d/dbus ]; then
+    sudo /etc/init.d/dbus start || true
+fi
 
 SOCKET_PATH="/var/run/docker.sock"
 echo "Initializing rootful Podman socket at $SOCKET_PATH..."
