@@ -233,7 +233,7 @@ VOLUME /home/coder/.local/share/containers
 ENV BUILDAH_ISOLATION=chroot
 
 # Create the automated initialization script to expose the Rootless Podman socket inside the workspace
-# Crucial Change: Start system service with implicit URI socket generation to prevent argument parsing issues.
+# Crucial Change: We unset CONTAINER_HOST and CONTAINER_CONNECTION to force the service to run in local engine mode.
 RUN cat > /usr/local/bin/init-local-podman.sh <<'EOF' && \
     chmod +x /usr/local/bin/init-local-podman.sh
 #!/bin/bash
@@ -263,9 +263,12 @@ rm -rf "/run/user/1000/podman"
 mkdir -p "/run/user/1000/podman"
 chmod 700 "/run/user/1000/podman"
 
+# Crucial Change: Temporarily unset remote-related settings so that the podman binary
+# behaves as a local engine daemon and successfully initiates the local background service.
+unset CONTAINER_HOST
+unset CONTAINER_CONNECTION
+
 # Launch the system service in the background as the rootless 'coder' user (no sudo)
-# We omit the positional URI here to let Podman generate the socket at $XDG_RUNTIME_DIR/podman/podman.sock natively,
-# completely resolving the "accepts at most 1 arg(s), received 3" CLI parsing conflict.
 podman system service --time=0 >/tmp/podman-service.stdout 2>/tmp/podman-service.stderr &
 SERVICE_PID=$!
 
