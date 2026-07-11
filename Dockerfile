@@ -146,11 +146,12 @@ RUN apt-get update && \
 RUN mkdir -p /etc/containers && touch /etc/containers/nodocker
 
 # Configure Sub-UIDs and Sub-GIDs mapping rules for root and coder.
-# Note: Root and coder ranges are separated cleanly to prevent overlap exhaustion errors.
-RUN echo "root:100000:65536" > /etc/subuid && \
-    echo "root:100000:65536" > /etc/subgid && \
-    echo "coder:200000:65536" >> /etc/subuid && \
-    echo "coder:200000:65536" >> /etc/subgid
+# Note: The ranges are scaled dynamically to fit under the host user's total 262,144 limit.
+# root uses [10000 - 75535], coder uses [100000 - 165535]. This resolves permission blockages!
+RUN echo "root:10000:65536" > /etc/subuid && \
+    echo "root:10000:65536" > /etc/subgid && \
+    echo "coder:100000:65536" >> /etc/subuid && \
+    echo "coder:100000:65536" >> /etc/subgid
 
 # Setup system-level Podman configuration files
 RUN mkdir -p /etc/containers && \
@@ -158,8 +159,8 @@ RUN mkdir -p /etc/containers && \
     echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/containers/storage\"\ngraphroot = \"/var/lib/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"" > /etc/containers/storage.conf
 
 # Write customized default containers.conf for PinP environments with hardcoded absolute paths & proxy servers
-# Crucial Change: Force 'cgroup_manager = "none"' and 'events_backend = "file"' in the [engine] block.
-# This prevents Podman from crashing inside containers when systemd/dbus features are unavailable.
+# Crucial Change: Force 'cgroup_manager = "none"', 'events_backend = "file"', and 'service_timeout = 0' in the [engine] block.
+# This prevents Podman from crashing inside containers when systemd/dbus features are unavailable and keeps the service alive indefinitely.
 RUN cat <<'EOF' > /etc/containers/containers.conf
 [engine]
 compose_warning_logs = false
@@ -167,6 +168,7 @@ runtime = "crun"
 database_backend = "sqlite"
 cgroup_manager = "none"
 events_backend = "file"
+service_timeout = 0
 
 [containers]
 netns = "host"
@@ -216,10 +218,10 @@ default_sysctls = []
 EOF
 
 # Setup User-level (Rootless) Podman configurations for the 'coder' user
-# Crucial Change: Force cgroup_manager = "none", events_backend = "file", and ignore_chown_errors = true.
+# Crucial Change: Force cgroup_manager = "none", events_backend = "file", service_timeout = 0, and ignore_chown_errors = true.
 RUN mkdir -p /home/coder/.config/containers /home/coder/.local/share/containers && \
     echo -e "[storage]\ndriver = \"overlay\"\nrunroot = \"/run/user/1000/containers/storage\"\ngraphroot = \"/home/coder/.local/share/containers/storage\"\n\n[storage.options]\nadditionalimagestores = []\n\n[storage.options.overlay]\nmount_program = \"/usr/bin/fuse-overlayfs\"\nmountopt = \"nodev,fsync=0\"\nignore_chown_errors = true" > /home/coder/.config/containers/storage.conf && \
-    echo -e "[engine]\ncgroup_manager = \"none\"\nevents_backend = \"file\"\n\n[containers]\nseccomp_profile = \"unconfined\"" > /home/coder/.config/containers/containers.conf && \
+    echo -e "[engine]\ncgroup_manager = \"none\"\nevents_backend = \"file\"\nservice_timeout = 0\n\n[containers]\nseccomp_profile = \"unconfined\"" > /home/coder/.config/containers/containers.conf && \
     chown -R coder:coder /home/coder/.config /home/coder/.local/share/containers
 
 # Setup runtime working directories and global environment settings for Rootless execution
@@ -263,8 +265,7 @@ rm -rf "/run/user/1000/podman"
 mkdir -p "/run/user/1000/podman"
 chmod 700 "/run/user/1000/podman"
 
-# Crucial Change: Temporarily unset remote-related settings so that the podman binary
-# behaves as a local engine daemon and successfully initiates the local background service.
+# Crucial Change: Clear remote configuration parameters globally to avoid client-only locks
 unset CONTAINER_HOST
 unset CONTAINER_CONNECTION
 
